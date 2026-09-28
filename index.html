@@ -417,7 +417,7 @@ function shipIcon(key){
 var Audio2 = (function(){
   var ctx = null, master = null, sfxBus = null, musicBus = null;
   var muted = false, musicOn = true, musicTimer = null, musicNext = 0, musicRunning = false;
-  var musicStopTimer = null;
+  var musicStopTimer = null, musicNodes = [];
 
   function ac(){
     if(!ctx){
@@ -496,6 +496,9 @@ var Audio2 = (function(){
     [28,"A4",1],[29,"C#5",1],[30,"E5",1],[31,"A4",1]
   ];
   var BASS_ROOTS = ["D2","A#1","F2","C2","D2","A#1","G1","A1"];
+  function regNode(node, endsAt){
+    musicNodes.push({ node:node, end:endsAt });
+  }
   function mVoice(c, when, freq, dur, type, vol){
     var o = c.createOscillator(), g = c.createGain();
     o.type = type; o.frequency.setValueAtTime(freq, when);
@@ -504,6 +507,7 @@ var Audio2 = (function(){
     g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
     o.connect(g); g.connect(musicBus);
     o.start(when); o.stop(when + dur + .05);
+    regNode(o, when + dur + .05);
   }
   function mTick(c, when, strong){
     var dur = strong ? .16 : .06;
@@ -519,6 +523,7 @@ var Audio2 = (function(){
     g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
     src.connect(f); f.connect(g); g.connect(musicBus);
     src.start(when); src.stop(when + dur + .02);
+    regNode(src, when + dur + .02);
   }
   function scheduleLoop(c, start){
     MELODY.forEach(function(ev){
@@ -540,7 +545,9 @@ var Audio2 = (function(){
   }
   function pump(){
     if(!ctx || !musicRunning) return;
-    while(musicNext < ctx.currentTime + 2.5) musicNext = scheduleLoop(ctx, musicNext);
+    var now = ctx.currentTime;
+    musicNodes = musicNodes.filter(function(n){ return n.end > now; });
+    while(musicNext < now + 2.5) musicNext = scheduleLoop(ctx, musicNext);
   }
   function startMusic(){
     if(!musicOn || musicRunning) return;
@@ -555,6 +562,10 @@ var Audio2 = (function(){
   function stopMusic(){
     musicRunning = false;
     if(musicTimer){ clearInterval(musicTimer); musicTimer = null; }
+    /* cancel notes already queued on the timeline so a restart can't
+       layer a second loop on top of the old one */
+    musicNodes.forEach(function(n){ try{ n.node.stop(); }catch(e){} });
+    musicNodes = [];
   }
   function cancelPendingStop(){
     if(musicStopTimer){ clearTimeout(musicStopTimer); musicStopTimer = null; }
