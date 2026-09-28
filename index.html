@@ -539,17 +539,20 @@ function clearShip(board, ship){
   ship.cells = []; ship.placed = false;
 }
 function randomFleet(board, fleet){
-  for(var r=0;r<SIZE;r++) for(var c=0;c<SIZE;c++) board[r][c].ship = null;
-  fleet.forEach(function(s){ s.cells = []; s.placed = false; s.hits = 0; s.sunk = false; });
-  fleet.forEach(function(s){
-    var tries = 0;
-    while(tries++ < 5000){
-      var h = Math.random() < .5;
-      var r = Math.floor(Math.random()*SIZE);
-      var c = Math.floor(Math.random()*SIZE);
-      if(canPlace(board, r, c, s.len, h)){ placeShip(board, s, r, c, h); break; }
-    }
-  });
+  for(var attempt=0; attempt<50; attempt++){
+    for(var r0=0;r0<SIZE;r0++) for(var c0=0;c0<SIZE;c0++) board[r0][c0].ship = null;
+    fleet.forEach(function(s){ s.cells = []; s.placed = false; s.hits = 0; s.sunk = false; });
+    fleet.forEach(function(s){
+      var tries = 0;
+      while(tries++ < 2000){
+        var h = Math.random() < .5;
+        var r = Math.floor(Math.random()*SIZE);
+        var c = Math.floor(Math.random()*SIZE);
+        if(canPlace(board, r, c, s.len, h)){ placeShip(board, s, r, c, h); break; }
+      }
+    });
+    if(fleet.every(function(s){ return s.placed; })) return;
+  }
 }
 
 /* ===================== state ===================== */
@@ -723,30 +726,35 @@ function playerFire(r, c){
   m.shot = true;
   state.stats.p.shots++;
   var coord = LETTERS[r] + (c+1);
-  if(m.ship){
+  var hit = !!m.ship;
+  if(hit){
     state.stats.p.hits++;
     m.ship.hits++;
     Audio2.explode();
-    renderBoards(); fx(cellEl(enemyGridEl, r, c), "boom");
     log("HIT at " + coord + "!", "hit");
     if(m.ship.hits >= m.ship.len){
       m.ship.sunk = true;
       state.stats.p.sunk++;
       setTimeout(function(){ Audio2.sink(); }, 260);
       log("You sank Claude Code's " + m.ship.name + "!", "sunk");
-      renderBoards();
     }
   } else {
     Audio2.splash();
-    renderBoards(); fx(cellEl(enemyGridEl, r, c), "splash");
     log("Miss at " + coord + ".", "");
   }
   renderFleet(); updateScore();
-  if(allSunk(state.enemyFleet)){ setTimeout(function(){ endGame(true); }, 700); return; }
+  if(allSunk(state.enemyFleet)){
+    renderBoards(); fx(cellEl(enemyGridEl, r, c), hit ? "boom" : "splash");
+    var won = state;
+    setTimeout(function(){ if(won === state) endGame(true); }, 900);
+    return;
+  }
   state.turn = "enemy";
   setTurnBox("enemy", "CLAUDE CODE", "Enemy is plotting a firing solution…");
   renderBoards();
-  setTimeout(enemyTurn, 900);
+  fx(cellEl(enemyGridEl, r, c), hit ? "boom" : "splash");
+  var era = state;
+  setTimeout(function(){ if(era === state) enemyTurn(); }, 900);
 }
 
 function neighbors(r, c){
@@ -770,10 +778,30 @@ function pickAiTarget(){
   var pool = parity.length ? parity : any;
   return pool[Math.floor(Math.random()*pool.length)];
 }
+function dedupeQueue(){
+  var seen = {}, out = [];
+  state.aiQueue.forEach(function(p){
+    var k = p[0] + "," + p[1];
+    if(seen[k] || state.playerBoard[p[0]][p[1]].shot) return;
+    seen[k] = true; out.push(p);
+  });
+  state.aiQueue = out;
+}
+function rebuildAiQueue(){
+  state.aiQueue = [];
+  state.aiHitStack.forEach(function(p){
+    neighbors(p[0], p[1]).forEach(function(n){ state.aiQueue.push(n); });
+  });
+  dedupeQueue();
+  refineQueueAlongLine();
+}
 function refineQueueAlongLine(){
   /* once two hits on the same ship line up, prefer continuing that line */
   var st = state.aiHitStack;
   if(st.length < 2) return;
+  var target = state.playerBoard[st[0][0]][st[0][1]].ship;
+  var sameShip = st.every(function(p){ return state.playerBoard[p[0]][p[1]].ship === target; });
+  if(!sameShip) return;
   var sameRow = st.every(function(p){ return p[0] === st[0][0]; });
   var sameCol = st.every(function(p){ return p[1] === st[0][1]; });
   if(!sameRow && !sameCol) return;
@@ -790,50 +818,62 @@ function refineQueueAlongLine(){
   cand = cand.filter(function(p){
     return p[0] >= 0 && p[0] < SIZE && p[1] >= 0 && p[1] < SIZE && !state.playerBoard[p[0]][p[1]].shot;
   });
-  if(cand.length) state.aiQueue = cand.concat(state.aiQueue);
+  if(cand.length){ state.aiQueue = cand.concat(state.aiQueue); dedupeQueue(); }
 }
 
 function enemyTurn(){
   if(state.phase !== "battle") return;
   Audio2.ping();
   var t = pickAiTarget();
-  if(!t){ return; }
+  if(!t){
+    state.turn = "player";
+    state.busy = false;
+    setTurnBox("", "YOUR MOVE", "Fire on the Claude Code tracking grid.");
+    renderBoards();
+    return;
+  }
   var r = t[0], c = t[1];
   var m = state.playerBoard[r][c];
+  var ship = m.ship;
   m.shot = true;
   state.stats.e.shots++;
   var coord = LETTERS[r] + (c+1);
-  if(m.ship){
+  if(ship){
     state.stats.e.hits++;
-    m.ship.hits++;
+    ship.hits++;
     Audio2.explode();
-    renderBoards(); fx(cellEl(playerGridEl, r, c), "boom");
-    log("Claude Code hits your " + m.ship.name + " at " + coord + "!", "enemy");
-    if(m.ship.hits >= m.ship.len){
-      m.ship.sunk = true;
+    log("Claude Code hits your " + ship.name + " at " + coord + "!", "enemy");
+    state.aiHitStack.push([r,c]);
+    if(ship.hits >= ship.len){
+      ship.sunk = true;
       state.stats.e.sunk++;
       setTimeout(function(){ Audio2.sink(); }, 260);
-      log("Claude Code sank your " + m.ship.name + "!", "sunk");
-      /* stop chasing this ship */
-      state.aiHitStack = [];
-      state.aiQueue = [];
-      renderBoards();
+      log("Claude Code sank your " + ship.name + "!", "sunk");
+      /* drop this wreck but keep chasing any other wounded ship */
+      state.aiHitStack = state.aiHitStack.filter(function(p){
+        return state.playerBoard[p[0]][p[1]].ship !== ship;
+      });
     } else {
-      state.aiHitStack.push([r,c]);
       neighbors(r,c).forEach(function(p){ state.aiQueue.push(p); });
-      refineQueueAlongLine();
     }
+    rebuildAiQueue();
   } else {
     Audio2.splash();
-    renderBoards(); fx(cellEl(playerGridEl, r, c), "splash");
     log("Claude Code misses at " + coord + ".", "enemy");
+    dedupeQueue();
   }
-  updateScore();
-  if(allSunk(state.playerFleet)){ setTimeout(function(){ endGame(false); }, 700); return; }
+  renderFleet(); updateScore();
+  if(allSunk(state.playerFleet)){
+    renderBoards(); fx(cellEl(playerGridEl, r, c), ship ? "boom" : "splash");
+    var lost = state;
+    setTimeout(function(){ if(lost === state) endGame(false); }, 900);
+    return;
+  }
   state.turn = "player";
   state.busy = false;
   setTurnBox("", "YOUR MOVE", "Fire on the Claude Code tracking grid.");
   renderBoards();
+  fx(cellEl(playerGridEl, r, c), ship ? "boom" : "splash");
 }
 
 /* ===================== end ===================== */
@@ -892,12 +932,18 @@ function resetGame(){
   renderBoards(); renderFleet(); updateScore();
 }
 
+var lastHover = null;
 playerGridEl.addEventListener("mousemove", function(e){
   var t = e.target.closest ? e.target.closest(".cell") : null;
   if(!t || state.phase !== "setup") return;
-  preview(+t.dataset.r, +t.dataset.c);
+  lastHover = [+t.dataset.r, +t.dataset.c];
+  preview(lastHover[0], lastHover[1]);
 });
-playerGridEl.addEventListener("mouseleave", clearPreview);
+playerGridEl.addEventListener("mouseleave", function(){ lastHover = null; clearPreview(); });
+function repreview(){
+  clearPreview();
+  if(lastHover) preview(lastHover[0], lastHover[1]);
+}
 playerGridEl.addEventListener("click", function(e){
   var t = e.target.closest ? e.target.closest(".cell") : null;
   if(!t || state.phase !== "setup") return;
@@ -923,18 +969,15 @@ enemyGridEl.addEventListener("click", function(e){
   playerFire(+t.dataset.r, +t.dataset.c);
 });
 
-$("rotateBtn").addEventListener("click", function(){
+function toggleOrientation(){
+  if(state.phase !== "setup") return;
   state.horizontal = !state.horizontal;
   $("orientLabel").textContent = state.horizontal ? "HORIZ" : "VERT";
-  clearPreview();
-});
+  repreview();
+}
+$("rotateBtn").addEventListener("click", toggleOrientation);
 document.addEventListener("keydown", function(e){
-  if(e.key === "r" || e.key === "R"){
-    if(state.phase !== "setup") return;
-    state.horizontal = !state.horizontal;
-    $("orientLabel").textContent = state.horizontal ? "HORIZ" : "VERT";
-    clearPreview();
-  }
+  if(e.key === "r" || e.key === "R") toggleOrientation();
 });
 $("randomBtn").addEventListener("click", function(){
   if(state.phase !== "setup") return;
