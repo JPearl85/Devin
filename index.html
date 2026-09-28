@@ -417,6 +417,7 @@ function shipIcon(key){
 var Audio2 = (function(){
   var ctx = null, master = null, sfxBus = null, musicBus = null;
   var muted = false, musicOn = true, musicTimer = null, musicNext = 0, musicRunning = false;
+  var musicStopTimer = null;
 
   function ac(){
     if(!ctx){
@@ -555,6 +556,9 @@ var Audio2 = (function(){
     musicRunning = false;
     if(musicTimer){ clearInterval(musicTimer); musicTimer = null; }
   }
+  function cancelPendingStop(){
+    if(musicStopTimer){ clearTimeout(musicStopTimer); musicStopTimer = null; }
+  }
   function fadeMusic(target, seconds){
     if(!musicBus || !ctx) return;
     var t = ctx.currentTime;
@@ -577,16 +581,20 @@ var Audio2 = (function(){
     isMusicOn:function(){ return musicOn; },
     setMusicOn:function(v){
       musicOn = v;
-      if(v){ ac(); fadeMusic(.85, .4); startMusic(); }
-      else { fadeMusic(0, .4); setTimeout(stopMusic, 450); }
+      if(v){ cancelPendingStop(); ac(); fadeMusic(.85, .4); startMusic(); }
+      else {
+        fadeMusic(0, .4);
+        cancelPendingStop();
+        musicStopTimer = setTimeout(function(){ musicStopTimer = null; stopMusic(); }, 450);
+      }
     },
     duckMusic:function(){ fadeMusic(.25, .6); },
     unduckMusic:function(){ if(musicOn) fadeMusic(.85, .8); },
-    startMusic:startMusic,
+    startMusic:function(){ cancelPendingStop(); startMusic(); },
     /* exposed so the output level can be measured with an AnalyserNode */
     outputNode:function(){ return master; },
     context:function(){ return ctx; },
-    unlock:function(){ ac(); startMusic(); },
+    unlock:function(){ ac(); cancelPendingStop(); startMusic(); },
     ping:function(){ tone({type:"sine", f0:1320, f1:1180, dur:.5, vol:.13, attack:.005});
                      tone({type:"sine", f0:990, f1:930, dur:.7, vol:.07, delay:.14}); },
     splash:function(){ noise({filter:"highpass", freq:1600, freqEnd:400, dur:.45, vol:.24});
