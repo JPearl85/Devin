@@ -279,7 +279,8 @@ footer.sig{text-align:center;color:var(--parchment-dark);font-size:11px;letter-s
           </svg>
           <span><b>Claude Code</b><em>ANTHROPIC · GUEST</em></span>
         </div>
-        <button class="btn" id="muteBtn" title="Toggle sound">&#128266; SOUND ON</button>
+        <button class="btn" id="musicBtn" title="Toggle music">&#127925; MUSIC ON</button>
+        <button class="btn" id="muteBtn" title="Toggle all sound">&#128266; SOUND ON</button>
       </div>
     </header>
 
@@ -360,6 +361,7 @@ footer.sig{text-align:center;color:var(--parchment-dark);font-size:11px;letter-s
         <li><b>Engage.</b> Fire by clicking a square on the Claude Code tracking grid. Red peg = hit, white peg = miss.</li>
         <li><b>Return fire.</b> Claude Code hunts at random until it draws blood, then chases adjacent squares until the ship goes down.</li>
         <li><b>Victory.</b> Sink all five enemy ships before your own fleet is lost.</li>
+        <li><b>Audio.</b> Browsers block sound until you interact with the page — the soundtrack starts on your first click. <b>MUSIC</b> toggles the score; <b>SOUND</b> mutes everything.</li>
       </ol>
     </div>
 
@@ -413,15 +415,29 @@ function shipIcon(key){
 
 /* ===================== audio ===================== */
 var Audio2 = (function(){
-  var ctx = null, muted = false;
+  var ctx = null, master = null, sfxBus = null, musicBus = null;
+  var muted = false, musicOn = true, musicTimer = null, musicNext = 0, musicRunning = false;
+  var musicStopTimer = null, musicNodes = [];
+
   function ac(){
     if(!ctx){
       var C = window.AudioContext || window.webkitAudioContext;
       if(!C) return null;
       ctx = new C();
+      master = ctx.createGain(); master.gain.value = muted ? 0 : 1; master.connect(ctx.destination);
+      sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
+      musicBus = ctx.createGain(); musicBus.gain.value = musicOn ? .85 : 0; musicBus.connect(master);
     }
-    if(ctx.state === "suspended") ctx.resume();
     return ctx;
+  }
+  /* schedule only once the context is actually running, otherwise the
+     autoplay-suspended context silently swallows everything queued */
+  function run(fn){
+    var c = ac(); if(!c) return;
+    if(c.state === "running"){ fn(c); return; }
+    var p = c.resume();
+    if(p && p.then) p.then(function(){ fn(c); })["catch"](function(){});
+    else fn(c);
   }
   function env(gain, t, a, d, peak){
     gain.gain.cancelScheduledValues(t);
@@ -430,37 +446,166 @@ var Audio2 = (function(){
     gain.gain.exponentialRampToValueAtTime(0.0001, t + a + d);
   }
   function tone(opts){
-    var c = ac(); if(!c || muted) return;
-    var t = c.currentTime + (opts.delay || 0);
-    var o = c.createOscillator(), g = c.createGain();
-    o.type = opts.type || "sine";
-    o.frequency.setValueAtTime(opts.f0, t);
-    if(opts.f1) o.frequency.exponentialRampToValueAtTime(Math.max(20, opts.f1), t + (opts.dur || .3));
-    env(g, t, opts.attack || .01, (opts.dur || .3), opts.vol || .18);
-    o.connect(g); g.connect(c.destination);
-    o.start(t); o.stop(t + (opts.dur || .3) + (opts.attack || .01) + .05);
+    run(function(c){
+      var t = c.currentTime + (opts.delay || 0);
+      var o = c.createOscillator(), g = c.createGain();
+      o.type = opts.type || "sine";
+      o.frequency.setValueAtTime(opts.f0, t);
+      if(opts.f1) o.frequency.exponentialRampToValueAtTime(Math.max(20, opts.f1), t + (opts.dur || .3));
+      env(g, t, opts.attack || .01, (opts.dur || .3), opts.vol || .18);
+      o.connect(g); g.connect(sfxBus);
+      o.start(t); o.stop(t + (opts.dur || .3) + (opts.attack || .01) + .05);
+    });
   }
   function noise(opts){
-    var c = ac(); if(!c || muted) return;
-    var t = c.currentTime + (opts.delay || 0);
-    var dur = opts.dur || .4;
+    run(function(c){
+      var t = c.currentTime + (opts.delay || 0);
+      var dur = opts.dur || .4;
+      var buf = c.createBuffer(1, Math.ceil(c.sampleRate * dur), c.sampleRate);
+      var d = buf.getChannelData(0);
+      for(var i=0;i<d.length;i++){ d[i] = (Math.random()*2-1) * (1 - i/d.length); }
+      var src = c.createBufferSource(); src.buffer = buf;
+      var f = c.createBiquadFilter();
+      f.type = opts.filter || "lowpass";
+      f.frequency.setValueAtTime(opts.freq || 900, t);
+      if(opts.freqEnd) f.frequency.exponentialRampToValueAtTime(Math.max(40,opts.freqEnd), t + dur);
+      var g = c.createGain();
+      env(g, t, .008, dur, opts.vol || .3);
+      src.connect(f); f.connect(g); g.connect(sfxBus);
+      src.start(t); src.stop(t + dur + .05);
+    });
+  }
+
+  /* ---------- original treasure-hunt march (looped) ---------- */
+  var SEMI = {C:0,"C#":1,D:2,"D#":3,E:4,F:5,"F#":6,G:7,"G#":8,A:9,"A#":10,B:11};
+  function hz(name){
+    var m = /^([A-G]#?)(-?\d)$/.exec(name);
+    var n = SEMI[m[1]] + (parseInt(m[2],10) + 1) * 12;
+    return 440 * Math.pow(2, (n - 69) / 12);
+  }
+  var BPM = 104, BEAT = 60 / BPM, LOOP_BEATS = 32;
+  /* [beat, note, beats] — D minor adventure theme */
+  var MELODY = [
+    [0,"D4",1],[1,"F4",.5],[1.5,"A4",.5],[2,"D5",1],[3,"A4",1],
+    [4,"A#4",1],[5,"A4",.5],[5.5,"F4",.5],[6,"D4",2],
+    [8,"C5",1],[9,"A4",.5],[9.5,"F4",.5],[10,"G4",1],[11,"A4",1],
+    [12,"E5",1.5],[13.5,"D5",.5],[14,"C5",2],
+    [16,"D5",1],[17,"C5",.5],[17.5,"A4",.5],[18,"F4",1],[19,"D4",1],
+    [20,"F4",1],[21,"G4",.5],[21.5,"A4",.5],[22,"A#4",2],
+    [24,"A4",1],[25,"A#4",.5],[25.5,"C5",.5],[26,"D5",1],[27,"E5",1],
+    [28,"A4",1],[29,"C#5",1],[30,"E5",1],[31,"A4",1]
+  ];
+  var BASS_ROOTS = ["D2","A#1","F2","C2","D2","A#1","G1","A1"];
+  function regNode(node, endsAt){
+    musicNodes.push({ node:node, end:endsAt });
+  }
+  function mVoice(c, when, freq, dur, type, vol){
+    var o = c.createOscillator(), g = c.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, when);
+    g.gain.setValueAtTime(0.0001, when);
+    g.gain.exponentialRampToValueAtTime(vol, when + .03);
+    g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+    o.connect(g); g.connect(musicBus);
+    o.start(when); o.stop(when + dur + .05);
+    regNode(o, when + dur + .05);
+  }
+  function mTick(c, when, strong){
+    var dur = strong ? .16 : .06;
     var buf = c.createBuffer(1, Math.ceil(c.sampleRate * dur), c.sampleRate);
     var d = buf.getChannelData(0);
-    for(var i=0;i<d.length;i++){ d[i] = (Math.random()*2-1) * (1 - i/d.length); }
+    for(var i=0;i<d.length;i++) d[i] = (Math.random()*2-1) * (1 - i/d.length);
     var src = c.createBufferSource(); src.buffer = buf;
     var f = c.createBiquadFilter();
-    f.type = opts.filter || "lowpass";
-    f.frequency.setValueAtTime(opts.freq || 900, t);
-    if(opts.freqEnd) f.frequency.exponentialRampToValueAtTime(Math.max(40,opts.freqEnd), t + dur);
+    f.type = strong ? "lowpass" : "highpass";
+    f.frequency.value = strong ? 340 : 5200;
     var g = c.createGain();
-    env(g, t, .008, dur, opts.vol || .3);
-    src.connect(f); f.connect(g); g.connect(c.destination);
-    src.start(t); src.stop(t + dur + .05);
+    g.gain.setValueAtTime(strong ? .16 : .045, when);
+    g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+    src.connect(f); f.connect(g); g.connect(musicBus);
+    src.start(when); src.stop(when + dur + .02);
+    regNode(src, when + dur + .02);
   }
+  function scheduleLoop(c, start){
+    MELODY.forEach(function(ev){
+      var when = start + ev[0] * BEAT, dur = ev[2] * BEAT * .92;
+      mVoice(c, when, hz(ev[1]), dur, "square", .055);
+      mVoice(c, when, hz(ev[1]) * 2.003, dur * .7, "triangle", .022);
+    });
+    BASS_ROOTS.forEach(function(root, bar){
+      var base = start + bar * 4 * BEAT, f0 = hz(root);
+      mVoice(c, base, f0, BEAT * .85, "triangle", .1);
+      mVoice(c, base + 2 * BEAT, f0, BEAT * .85, "triangle", .09);
+      mVoice(c, base + 3 * BEAT, f0 * 1.4983, BEAT * .7, "triangle", .07);
+    });
+    for(var b=0;b<LOOP_BEATS;b++){
+      mTick(c, start + b * BEAT, b % 2 === 0);
+      mTick(c, start + (b + .5) * BEAT, false);
+    }
+    return start + LOOP_BEATS * BEAT;
+  }
+  function pump(){
+    if(!ctx || !musicRunning) return;
+    var now = ctx.currentTime;
+    musicNodes = musicNodes.filter(function(n){ return n.end > now; });
+    while(musicNext < now + 2.5) musicNext = scheduleLoop(ctx, musicNext);
+  }
+  function startMusic(){
+    if(!musicOn || musicRunning) return;
+    run(function(c){
+      if(musicRunning) return;
+      musicRunning = true;
+      musicNext = c.currentTime + .12;
+      pump();
+      musicTimer = setInterval(pump, 900);
+    });
+  }
+  function stopMusic(){
+    musicRunning = false;
+    if(musicTimer){ clearInterval(musicTimer); musicTimer = null; }
+    /* cancel notes already queued on the timeline so a restart can't
+       layer a second loop on top of the old one */
+    musicNodes.forEach(function(n){ try{ n.node.stop(); }catch(e){} });
+    musicNodes = [];
+  }
+  function cancelPendingStop(){
+    if(musicStopTimer){ clearTimeout(musicStopTimer); musicStopTimer = null; }
+  }
+  function fadeMusic(target, seconds){
+    if(!musicBus || !ctx) return;
+    var t = ctx.currentTime;
+    musicBus.gain.cancelScheduledValues(t);
+    musicBus.gain.setValueAtTime(musicBus.gain.value, t);
+    musicBus.gain.linearRampToValueAtTime(target, t + seconds);
+  }
+
   return {
     isMuted:function(){ return muted; },
-    setMuted:function(v){ muted = v; },
-    unlock:function(){ ac(); },
+    setMuted:function(v){
+      muted = v;
+      if(master && ctx){
+        var t = ctx.currentTime;
+        master.gain.cancelScheduledValues(t);
+        master.gain.setValueAtTime(master.gain.value, t);
+        master.gain.linearRampToValueAtTime(v ? 0 : 1, t + .12);
+      }
+    },
+    isMusicOn:function(){ return musicOn; },
+    setMusicOn:function(v){
+      musicOn = v;
+      if(v){ cancelPendingStop(); ac(); fadeMusic(.85, .4); startMusic(); }
+      else {
+        fadeMusic(0, .4);
+        cancelPendingStop();
+        musicStopTimer = setTimeout(function(){ musicStopTimer = null; stopMusic(); }, 450);
+      }
+    },
+    duckMusic:function(){ fadeMusic(.25, .6); },
+    unduckMusic:function(){ if(musicOn) fadeMusic(.85, .8); },
+    startMusic:function(){ cancelPendingStop(); startMusic(); },
+    /* exposed so the output level can be measured with an AnalyserNode */
+    outputNode:function(){ return master; },
+    context:function(){ return ctx; },
+    unlock:function(){ ac(); cancelPendingStop(); startMusic(); },
     ping:function(){ tone({type:"sine", f0:1320, f1:1180, dur:.5, vol:.13, attack:.005});
                      tone({type:"sine", f0:990, f1:930, dur:.7, vol:.07, delay:.14}); },
     splash:function(){ noise({filter:"highpass", freq:1600, freqEnd:400, dur:.45, vol:.24});
@@ -891,6 +1036,7 @@ function endGame(playerWon){
     "DEVIN — " + s.p.shots + " shots · " + s.p.hits + " hits · " + s.p.sunk + " sunk<br>" +
     "CLAUDE CODE — " + s.e.shots + " shots · " + s.e.hits + " hits · " + s.e.sunk + " sunk";
   overlay.classList.add("show");
+  Audio2.duckMusic();
   if(playerWon) Audio2.fanfare(); else Audio2.defeat();
   /* reveal remaining enemy ships */
   for(var r=0;r<SIZE;r++) for(var c=0;c<SIZE;c++){
@@ -922,6 +1068,7 @@ function startBattle(){
 function resetGame(){
   state = newState();
   overlay.classList.remove("show");
+  Audio2.unduckMusic();
   logEl.innerHTML = "";
   $("setupControls").style.display = "";
   $("playerSub").textContent = "Your waters";
@@ -1001,8 +1148,15 @@ $("muteBtn").addEventListener("click", function(){
   this.innerHTML = m ? "&#128263; SOUND OFF" : "&#128266; SOUND ON";
   if(!m){ Audio2.unlock(); Audio2.ping(); }
 });
+$("musicBtn").addEventListener("click", function(){
+  var on = !Audio2.isMusicOn();
+  Audio2.setMusicOn(on);
+  this.innerHTML = on ? "&#127925; MUSIC ON" : "&#127926;&#65038; MUSIC OFF";
+});
+document.addEventListener("pointerdown", function(){ Audio2.unlock(); }, { once:true });
 
 /* boot */
+window.BattleshipAudio = Audio2;
 buildGrid(playerGridEl, "player");
 buildGrid(enemyGridEl, "enemy");
 state = newState();
