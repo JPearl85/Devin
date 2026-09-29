@@ -423,17 +423,30 @@ var Audio2 = (function(){
   var ctx = null, master = null, sfxBus = null, musicBus = null;
   var muted = false, musicOn = true, musicTimer = null, musicNext = 0, musicRunning = false;
   var musicStopTimer = null, musicNodes = [];
-  var MUSIC_GAIN = 2.2, DUCK_GAIN = MUSIC_GAIN * .3;
+  var MUSIC_GAIN = 1.9, DUCK_GAIN = MUSIC_GAIN * .3;
+  /* tanh transfer curve: soft-saturates instead of letting a transient
+     run past full scale and clip at the device */
+  function softClipCurve(){
+    var n = 2048, curve = new Float32Array(n);
+    for(var i=0;i<n;i++){
+      var x = (i / (n - 1)) * 2 - 1;
+      curve[i] = Math.tanh(x * 1.6) / Math.tanh(1.6);
+    }
+    return curve;
+  }
 
   function ac(){
     if(!ctx){
       var C = window.AudioContext || window.webkitAudioContext;
       if(!C) return null;
       ctx = new C();
+      var shaper = ctx.createWaveShaper();
+      shaper.curve = softClipCurve(); shaper.oversample = "2x";
+      shaper.connect(ctx.destination);
       var limiter = ctx.createDynamicsCompressor();
-      limiter.threshold.value = -6; limiter.knee.value = 6; limiter.ratio.value = 12;
-      limiter.attack.value = .003; limiter.release.value = .2;
-      limiter.connect(ctx.destination);
+      limiter.threshold.value = -10; limiter.knee.value = 4; limiter.ratio.value = 20;
+      limiter.attack.value = .001; limiter.release.value = .15;
+      limiter.connect(shaper);
       master = ctx.createGain(); master.gain.value = muted ? 0 : 1; master.connect(limiter);
       sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
       musicBus = ctx.createGain(); musicBus.gain.value = musicOn ? MUSIC_GAIN : 0; musicBus.connect(master);
