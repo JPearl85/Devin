@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Battleship — Devin vs Claude Code</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%236C3FD4'/%3E%3Cpath d='M5 21h22l-3 5H8z' fill='%23e8dcc0'/%3E%3Cpath d='M15 6h2v13h-2z' fill='%23e8dcc0'/%3E%3Cpath d='M17 8l7 3-7 3z' fill='%23D97757'/%3E%3C/svg%3E" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Special+Elite&display=swap" rel="stylesheet" />
@@ -230,6 +231,9 @@ header.topbar{position:relative;z-index:2;display:flex;align-items:center;justif
 .fleet li .len{margin-left:auto;font-size:11px;opacity:.75;letter-spacing:.08em}
 .controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
 .hintline{font-size:11.5px;line-height:1.5;margin:8px 0 0;opacity:.85}
+.audio-nudge{margin:10px auto 0;width:max-content;padding:6px 14px;border-radius:999px;font-family:'Special Elite',Georgia,serif;font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:#f3e6c8;background:linear-gradient(180deg,rgba(108,63,212,.92),rgba(52,28,104,.92));border:1px solid rgba(201,162,39,.6);box-shadow:0 2px 10px rgba(0,0,0,.45);animation:nudgePulse 1.9s ease-in-out infinite}
+.audio-nudge.hidden{display:none}
+@keyframes nudgePulse{0%,100%{opacity:.6}50%{opacity:1}}
 
 /* compass + rope decorations */
 .compass{display:block;margin:0 auto;filter:drop-shadow(0 4px 8px rgba(0,0,0,.5))}
@@ -279,9 +283,10 @@ footer.sig{text-align:center;color:var(--parchment-dark);font-size:11px;letter-s
           </svg>
           <span><b>Claude Code</b><em>ANTHROPIC · GUEST</em></span>
         </div>
-        <button class="btn" id="musicBtn" title="Toggle music">&#127925; MUSIC ON</button>
-        <button class="btn" id="muteBtn" title="Toggle all sound">&#128266; SOUND ON</button>
+        <button class="btn" id="musicBtn" title="Toggle music">MUSIC: ON</button>
+        <button class="btn" id="muteBtn" title="Toggle all sound">SOUND: ON</button>
       </div>
+      <div id="audioNudge" class="audio-nudge">Click anywhere to start the music</div>
     </header>
 
     <div class="layout">
@@ -418,15 +423,20 @@ var Audio2 = (function(){
   var ctx = null, master = null, sfxBus = null, musicBus = null;
   var muted = false, musicOn = true, musicTimer = null, musicNext = 0, musicRunning = false;
   var musicStopTimer = null, musicNodes = [];
+  var MUSIC_GAIN = 2.2, DUCK_GAIN = MUSIC_GAIN * .3;
 
   function ac(){
     if(!ctx){
       var C = window.AudioContext || window.webkitAudioContext;
       if(!C) return null;
       ctx = new C();
-      master = ctx.createGain(); master.gain.value = muted ? 0 : 1; master.connect(ctx.destination);
+      var limiter = ctx.createDynamicsCompressor();
+      limiter.threshold.value = -6; limiter.knee.value = 6; limiter.ratio.value = 12;
+      limiter.attack.value = .003; limiter.release.value = .2;
+      limiter.connect(ctx.destination);
+      master = ctx.createGain(); master.gain.value = muted ? 0 : 1; master.connect(limiter);
       sfxBus = ctx.createGain(); sfxBus.gain.value = 1; sfxBus.connect(master);
-      musicBus = ctx.createGain(); musicBus.gain.value = musicOn ? .85 : 0; musicBus.connect(master);
+      musicBus = ctx.createGain(); musicBus.gain.value = musicOn ? MUSIC_GAIN : 0; musicBus.connect(master);
     }
     return ctx;
   }
@@ -592,15 +602,15 @@ var Audio2 = (function(){
     isMusicOn:function(){ return musicOn; },
     setMusicOn:function(v){
       musicOn = v;
-      if(v){ cancelPendingStop(); ac(); fadeMusic(.85, .4); startMusic(); }
+      if(v){ cancelPendingStop(); ac(); fadeMusic(MUSIC_GAIN, .4); startMusic(); }
       else {
         fadeMusic(0, .4);
         cancelPendingStop();
         musicStopTimer = setTimeout(function(){ musicStopTimer = null; stopMusic(); }, 450);
       }
     },
-    duckMusic:function(){ fadeMusic(.25, .6); },
-    unduckMusic:function(){ if(musicOn) fadeMusic(.85, .8); },
+    duckMusic:function(){ fadeMusic(DUCK_GAIN, .6); },
+    unduckMusic:function(){ if(musicOn) fadeMusic(MUSIC_GAIN, .8); },
     startMusic:function(){ cancelPendingStop(); startMusic(); },
     /* exposed so the output level can be measured with an AnalyserNode */
     outputNode:function(){ return master; },
@@ -1145,15 +1155,18 @@ $("rematchBtn").addEventListener("click", function(){ Audio2.unlock(); resetGame
 $("muteBtn").addEventListener("click", function(){
   var m = !Audio2.isMuted();
   Audio2.setMuted(m);
-  this.innerHTML = m ? "&#128263; SOUND OFF" : "&#128266; SOUND ON";
+  this.textContent = m ? "SOUND: OFF" : "SOUND: ON";
   if(!m){ Audio2.unlock(); Audio2.ping(); }
 });
 $("musicBtn").addEventListener("click", function(){
   var on = !Audio2.isMusicOn();
   Audio2.setMusicOn(on);
-  this.innerHTML = on ? "&#127925; MUSIC ON" : "&#127926;&#65038; MUSIC OFF";
+  this.textContent = on ? "MUSIC: ON" : "MUSIC: OFF";
 });
-document.addEventListener("pointerdown", function(){ Audio2.unlock(); }, { once:true });
+document.addEventListener("pointerdown", function(){
+  Audio2.unlock();
+  $("audioNudge").classList.add("hidden");
+}, { once:true });
 
 /* boot */
 window.BattleshipAudio = Audio2;
