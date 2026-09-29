@@ -441,8 +441,11 @@ var Audio2 = (function(){
       if(!C) return null;
       ctx = new C();
       var shaper = ctx.createWaveShaper();
-      shaper.curve = softClipCurve(); shaper.oversample = "2x";
-      shaper.connect(ctx.destination);
+      /* no oversampling: its resampling filters ring past the curve's
+         bounds, which is the one thing this stage exists to prevent */
+      shaper.curve = softClipCurve(); shaper.oversample = "none";
+      var trim = ctx.createGain(); trim.gain.value = .92;
+      shaper.connect(trim); trim.connect(ctx.destination);
       var limiter = ctx.createDynamicsCompressor();
       limiter.threshold.value = -10; limiter.knee.value = 4; limiter.ratio.value = 20;
       limiter.attack.value = .001; limiter.release.value = .15;
